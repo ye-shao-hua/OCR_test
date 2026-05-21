@@ -4,52 +4,64 @@ import time
 import easyocr
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+FONT_PATH = "C:/Windows/Fonts/simhei.ttf"
 
 
 def preprocess_image(img_path):
-    """图像预处理：缩放 + CLAHE增强 + 降噪"""
+    """轻量预处理：缩放 + 灰度 + CLAHE"""
     img = cv2.imread(img_path)
     if img is None:
         return None
 
     h, w = img.shape[:2]
-    max_side = 2500
+    max_side = 1600
     if max(h, w) > max_side:
         scale = max_side / max(h, w)
         new_w, new_h = int(w * scale), int(h * scale)
-        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-    denoised = cv2.bilateralFilter(enhanced, 9, 75, 75)
 
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    sharpened = cv2.filter2D(denoised, -1, kernel)
-
-    return sharpened
+    return enhanced
 
 
 def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
-    """在原图上绘制检测框和标注，保存到结果文件夹"""
-    img_draw = img_orig.copy()
-    h, w = img_draw.shape[:2]
-
-    # 根据图像尺寸自适应调整参数
+    """用 PIL 绘制检测框和中文标注，避免乱码"""
+    h, w = img_orig.shape[:2]
     base = max(h, w)
-    box_thickness = max(2, base // 800)
-    font_scale = base / 1200
-    text_thickness = max(1, base // 1200)
-    text_padding = base // 200
-    max_text_len = 30  # 换行阈值
 
-    # 已占用的标注区域，用于碰撞检测避免重叠
+    # PIL 图像转换（BGR → RGB）
+    img_rgb = cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(img_rgb)
+    draw = ImageDraw.Draw(pil_img)
+
+    # 自适应参数
+    box_w = max(2, base // 900)
+    font_size = max(12, base // 45)
+    try:
+        font = ImageFont.truetype(FONT_PATH, font_size)
+    except Exception:
+        font = ImageFont.load_default()
+
+    # 颜色方案（RGB）
+    def get_color(conf):
+        if conf >= 70:
+            return (0, 180, 0, 220)
+        elif conf >= 30:
+            return (255, 140, 0, 220)
+        else:
+            return (220, 30, 30, 220)
+
     occupied = []
 
-    def is_overlap(y1_line, y2_line):
-        margin = text_padding * 2
+    def is_overlap(yt, yb):
+        m = font_size
         for oy1, oy2 in occupied:
-            if not (y2_line + margin < oy1 or y1_line - margin > oy2):
+            if not (yb + m < oy1 or yt - m > oy2):
                 return True
         return False
 
@@ -57,82 +69,71 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
         x1, y1 = int(bbox[0][0]), int(bbox[0][1])
         x2, y2 = int(bbox[2][0]), int(bbox[2][1])
         conf_pct = confidence * 100
+        color = get_color(conf_pct)
 
-        # 颜色选择：高置信度绿色，中等橙色，低置信度红色
-        if conf_pct >= 70:
-            color = (0, 200, 0)       # 绿
-        elif conf_pct >= 30:
-            color = (0, 140, 255)     # 橙
-        else:
-            color = (0, 0, 255)       # 红
+        # 检测框
+        draw.rectangle([x1, y1, x2, y2], outline=color[:3], width=box_w)
 
-        # 绘制检测框
-        cv2.rectangle(img_draw, (x1, y1), (x2, y2), color, box_thickness)
+        # 标签文字
+        label = f"{text} ({conf_pct:.1f}%)"
+        bbox_text = draw.textbbox((0, 0), label, font=font)
+        tw, th = bbox_text[2] - bbox_text[0], bbox_text[3] - bbox_text[1]
 
-        # 构造标注文字
-        label = f" {text} ({conf_pct:.1f}%)"
-
-        # 计算标注位置：优先放在框上方，其次下方
-        font_height = int(font_scale * 20)
-        label_y_top = y1 - text_padding - font_height
-        label_y_bot = y2 + text_padding
-
-        # 尝试放上方
-        if label_y_top > 0 and not is_overlap(label_y_top, y1):
-            label_base_y = y1 - text_padding
-            text_y = label_base_y - int(font_height * 0.3)
-        else:
-            # 放下方，如果贴图像底部则顶格
-            label_base_y = y2 + text_padding + font_height
-            if label_base_y > h:
-                label_base_y = y2 - text_padding
-                text_y = label_base_y - int(font_height * 0.3)
-            else:
-                text_y = label_base_y
-
-        # 半透明背景框
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thickness)
+        pad = font_size // 3
         bg_x1 = x1
-        bg_x2 = x1 + tw + text_padding
-        bg_y1 = text_y - th - text_padding // 2
-        bg_y2 = text_y + text_padding // 2
+        bg_y1 = y1 - th - pad
+        bg_x2 = x1 + tw + pad * 2
+        bg_y2 = y1
+
+        # 上方空间不足则放框内上方
+        if bg_y1 < 0 or is_overlap(bg_y1, bg_y2):
+            bg_y1 = y1 + pad
+            bg_y2 = y1 + th + pad * 2
+            if bg_y2 > h:
+                bg_y1 = y2 - th - pad
+                bg_y2 = y2
 
         bg_x1 = max(0, bg_x1)
         bg_x2 = min(w, bg_x2)
         bg_y1 = max(0, bg_y1)
         bg_y2 = min(h, bg_y2)
 
-        overlay = img_draw.copy()
-        cv2.rectangle(overlay, (bg_x1, bg_y1), (bg_x2, bg_y2), color, -1)
-        cv2.addWeighted(overlay, 0.35, img_draw, 0.65, 0, img_draw)
-        cv2.rectangle(img_draw, (bg_x1, bg_y1), (bg_x2, bg_y2), color, box_thickness)
+        # 半透明背景
+        overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2],
+                               fill=color, outline=color[:3], width=box_w)
+        pil_img = Image.alpha_composite(pil_img.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(pil_img)
 
-        # 绘制文字
-        cv2.putText(img_draw, label, (x1, text_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, text_thickness,
-                    cv2.LINE_AA)
+        # 文字（白色）
+        text_x = bg_x1 + pad
+        text_y = bg_y1 + (bg_y2 - bg_y1 - th) // 2
+        draw.text((text_x, text_y), label, font=font, fill=(255, 255, 255))
 
         occupied.append((bg_y1, bg_y2))
 
-    # 右上角图例
-    legend_x = w - int(base * 0.22) - text_padding
-    legend_y = text_padding * 3
+    # 图例
+    legend_x = w - int(base * 0.22)
+    legend_y = font_size * 2
     legend_items = [
-        ("High (>=70%)", (0, 200, 0)),
-        ("Medium (30-70%)", (0, 140, 255)),
-        ("Low (<30%)", (0, 0, 255)),
+        (">=70%", (0, 180, 0)),
+        ("30-70%", (255, 140, 0)),
+        ("<30%", (220, 30, 30)),
     ]
-    lw = int(base // 400) + 1
-    lh = int(font_scale * 18)
-    for label, color in legend_items:
-        cv2.rectangle(img_draw, (legend_x, legend_y), (legend_x + 20, legend_y + 12), color, -1)
-        cv2.putText(img_draw, label, (legend_x + 28, legend_y + 11),
-                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.7, (255, 255, 255), max(1, lw - 1),
-                    cv2.LINE_AA)
-        legend_y += lh
+    l_font_size = max(10, font_size * 3 // 4)
+    try:
+        l_font = ImageFont.truetype(FONT_PATH, l_font_size)
+    except Exception:
+        l_font = ImageFont.load_default()
+    for text, clr in legend_items:
+        draw.rectangle([legend_x, legend_y, legend_x + 16, legend_y + 10], fill=clr)
+        draw.text((legend_x + 22, legend_y - 2), text, font=l_font, fill=clr)
+        legend_y += l_font_size + 6
 
+    # 保存
     out_path = os.path.join(result_dir, img_name)
-    cv2.imwrite(out_path, img_draw)
+    cv2.imwrite(out_path, cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR))
     return out_path
 
 
@@ -157,7 +158,7 @@ def main():
         print("[错误] 未找到图像文件")
         sys.exit(1)
 
-    print(f"共找到 {len(image_files)} 张图像，开始初始化 EasyOCR 引擎...")
+    print(f"共找到 {len(image_files)} 张图像，初始化 EasyOCR 引擎...")
 
     reader = easyocr.Reader(["ch_sim", "en"], gpu=False)
 
@@ -171,7 +172,6 @@ def main():
         f_out.write(f"OCR 引擎: EasyOCR\n")
         f_out.write(f"支持语言: 简体中文 / English\n")
         f_out.write(f"图像总数: {len(image_files)}\n")
-        f_out.write(f"预处理: CLAHE增强 + 双边滤波降噪 + 锐化\n")
         f_out.write("=" * 70 + "\n\n")
 
         for idx, img_name in enumerate(image_files, 1):
@@ -214,7 +214,7 @@ def main():
                     f_out.write(f"    {' | '.join(all_texts)}\n\n")
 
                     out_path = draw_ocr_boxes(img_orig, detections, img_name, result_dir)
-                    print(f"    可视化结果保存至: {out_path}")
+                    print(f"    可视化 -> {out_path}")
 
                 results_all.append({
                     "file": img_name,
