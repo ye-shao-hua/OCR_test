@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 FONT_PATH = "C:/Windows/Fonts/simhei.ttf"
 
 
-def load_and_preprocess(img_path, max_side=1600):
-    """加载图像并预处理，返回 (处理后图像, scale_x, scale_y, 原始BGR图)"""
+def load_and_preprocess(img_path, max_side=1600, clip_limit=1.5):
+    """加载图像并做自适应预处理：缩放 + 灰度 + CLAHE 增强"""
     img = cv2.imread(img_path)
     if img is None:
         return None, 1.0, 1.0, None
@@ -28,14 +28,14 @@ def load_and_preprocess(img_path, max_side=1600):
         img_resized = img
 
     gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
 
     return enhanced, scale_x, scale_y, img
 
 
 def scale_detections(detections, sx, sy):
-    """将检测坐标从缩放空间映射回原图空间"""
+    """将检测框坐标从预处理图映射回原图"""
     scaled = []
     for bbox, text, conf in detections:
         pts = [[p[0] * sx, p[1] * sy] for p in bbox]
@@ -44,7 +44,7 @@ def scale_detections(detections, sx, sy):
 
 
 def iou(boxA, boxB):
-    """两个边界框的 IoU"""
+    """两个边界框的 IoU（交并比），用于去重"""
     xa1 = max(min(p[0] for p in boxA), min(p[0] for p in boxB))
     ya1 = max(min(p[1] for p in boxA), min(p[1] for p in boxB))
     xa2 = min(max(p[0] for p in boxA), max(p[0] for p in boxB))
@@ -60,7 +60,7 @@ def iou(boxA, boxB):
 
 
 def merge_detections(pass1, pass2, iou_thresh=0.5):
-    """合并两轮检测结果，IoU 高的取置信度高的"""
+    """合并两次检测结果，重叠框保留置信度更高的"""
     merged = list(pass1)
     for det_b in pass2:
         dup = False
@@ -75,14 +75,43 @@ def merge_detections(pass1, pass2, iou_thresh=0.5):
     return merged
 
 
+def dedup_detections(detections, iou_thresh=0.3):
+    """移除高度重叠的重复检测，保留置信度更高的"""
+    deduped = []
+    for det in sorted(detections, key=lambda d: -d[2]):
+        dup = False
+        for existing in deduped:
+            if iou(det[0], existing[0]) > iou_thresh:
+                dup = True
+                break
+        if not dup:
+            deduped.append(det)
+    return deduped
+
+
+def filter_low_quality(detections, conf_thresh=0.15, min_area_ratio=0.0001, img_w=1, img_h=1):
+    """过滤低质量检测：置信度过低 或 框面积过小（噪声）"""
+    img_area = img_w * img_h
+    result = []
+    for bbox, text, conf in detections:
+        if conf < conf_thresh:
+            continue
+        w = max(p[0] for p in bbox) - min(p[0] for p in bbox)
+        h = max(p[1] for p in bbox) - min(p[1] for p in bbox)
+        if w * h < img_area * min_area_ratio:
+            continue
+        result.append((bbox, text, conf))
+    return result
+
+
 def detect_with_reader(reader, processed, sx, sy):
-    """执行检测并映射坐标回原图"""
+    """执行 EasyOCR 检测并映射回原图坐标"""
     raw = reader.readtext(processed, detail=1)
     return scale_detections(raw, sx, sy)
 
 
 def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
-    """PIL 绘制检测框与中文标注"""
+    """在原图上绘制检测框与标签，带回退字体支持"""
     h, w = img_orig.shape[:2]
     base = max(h, w)
 
@@ -90,8 +119,8 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
     pil_img = Image.fromarray(img_rgb)
     draw = ImageDraw.Draw(pil_img)
 
-    box_w = max(2, base // 900)
-    font_size = max(14, base // 40)
+    box_w = max(1, base // 1400)
+    font_size = max(10, base // 65)
     try:
         font = ImageFont.truetype(FONT_PATH, font_size)
     except Exception:
@@ -99,13 +128,13 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
 
     def get_color(conf):
         if conf >= 70:
-            return (0, 180, 0, 200)
+            return (80, 200, 80, 120)
         elif conf >= 30:
-            return (255, 140, 0, 200)
+            return (240, 160, 60, 120)
         else:
-            return (220, 30, 30, 200)
+            return (220, 80, 80, 120)
 
-    occupied = []
+    occupied_regions = []
 
     for bbox, text, confidence in detections:
         x1 = int(min(p[0] for p in bbox))
@@ -117,31 +146,38 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
 
         draw.rectangle([x1, y1, x2, y2], outline=color[:3], width=box_w)
 
-        label = f"{text} ({conf_pct:.1f}%)"
+        label = f"{text}({conf_pct:.0f}%)"
         tb = draw.textbbox((0, 0), label, font=font)
         tw, th = tb[2] - tb[0], tb[3] - tb[1]
-        pad = font_size // 3
+        pad = max(2, font_size // 4)
 
-        # 标签位置：优先框上方
-        bg_x1 = x1
-        bg_y1 = y1 - th - pad * 2
-        bg_x2 = x1 + tw + pad * 2
-        bg_y2 = y1
+        candidates = [
+            (x1, y1 - th - pad * 2, x1 + tw + pad * 2, y1),
+            (x1, y2, x1 + tw + pad * 2, y2 + th + pad * 2),
+            (x2 + pad, y1, x2 + tw + pad * 3, y1 + th + pad * 2),
+            (x1, y1, x1 + tw + pad * 2, y1 + th + pad * 2),
+        ]
 
-        place_above = bg_y1 >= 0
-        # 碰撞检测
-        if place_above:
-            for oy1, oy2 in occupied:
-                if not (bg_y2 + font_size < oy1 or bg_y1 - font_size > oy2):
-                    place_above = False
+        best = None
+        for bg_x1, bg_y1, bg_x2, bg_y2 in candidates:
+            if bg_x2 > w or bg_y1 < 0 or bg_y2 > h:
+                continue
+            overlap = False
+            for rx1, ry1, rx2, ry2 in occupied_regions:
+                oxa = max(bg_x1, rx1)
+                oya = max(bg_y1, ry1)
+                oxb = min(bg_x2, rx2)
+                oyb = min(bg_y2, ry2)
+                if oxb > oxa and oyb > oya:
+                    overlap = True
                     break
+            if not overlap:
+                best = (bg_x1, bg_y1, bg_x2, bg_y2)
+                break
 
-        if not place_above:
-            bg_y1 = y2
-            bg_y2 = y2 + th + pad * 2
-            if bg_y2 > h:
-                bg_y1 = y1
-                bg_y2 = y1 + th + pad * 2
+        if best is None:
+            best = (x1, y1 - th - pad * 2, x1 + tw + pad * 2, y1)
+        bg_x1, bg_y1, bg_x2, bg_y2 = best
 
         bg_x1 = max(0, bg_x1)
         bg_x2 = min(w, bg_x2)
@@ -150,27 +186,27 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
 
         overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
         od = ImageDraw.Draw(overlay)
-        od.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=color, outline=color[:3], width=box_w)
+        od.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=color, outline=color[:3], width=1)
         pil_img = Image.alpha_composite(pil_img.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(pil_img)
 
         tx = bg_x1 + pad
         ty = bg_y1 + (bg_y2 - bg_y1 - th) // 2
         draw.text((tx, ty), label, font=font, fill=(255, 255, 255))
-        occupied.append((bg_y1, bg_y2))
+        occupied_regions.append((bg_x1, bg_y1, bg_x2, bg_y2))
 
     # 图例
-    lx = w - int(base * 0.2)
-    ly = font_size
-    l_font_size = max(10, font_size * 3 // 4)
+    lx = w - int(base * 0.15)
+    ly = font_size // 2
+    l_fs = max(9, font_size * 2 // 3)
     try:
-        l_font = ImageFont.truetype(FONT_PATH, l_font_size)
+        l_font = ImageFont.truetype(FONT_PATH, l_fs)
     except Exception:
         l_font = ImageFont.load_default()
-    for label, clr in [(">=70%", (0, 180, 0)), ("30-70%", (255, 140, 0)), ("<30%", (220, 30, 30))]:
-        draw.rectangle([lx, ly, lx + 14, ly + 9], fill=clr)
-        draw.text((lx + 20, ly - 1), label, font=l_font, fill=clr)
-        ly += l_font_size + 6
+    for label, clr in [(">=70", (80, 200, 80)), ("30-70", (240, 160, 60)), ("<30", (220, 80, 80))]:
+        draw.rectangle([lx, ly, lx + 10, ly + 7], fill=clr)
+        draw.text((lx + 14, ly - 2), label, font=l_font, fill=clr)
+        ly += l_fs + 4
 
     out_path = os.path.join(result_dir, img_name)
     cv2.imwrite(out_path, cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR))
@@ -222,19 +258,24 @@ def main():
                     continue
                 h, w = img_orig.shape[:2]
 
-                # 第一轮：预处理增强图
-                processed, sx, sy, _ = load_and_preprocess(img_path, max_side=1600)
-                if processed is None:
-                    continue
-
                 start = time.time()
-                dets1 = detect_with_reader(reader, processed, sx, sy)
 
-                # 第二轮：轻度预处理（仅灰度，不缩放），补充遗漏
-                proc2, sx2, sy2, _ = load_and_preprocess(img_path, max_side=2500)
-                dets2 = detect_with_reader(reader, proc2, sx2, sy2)
+                # 第一遍：标准预处理（CLAHE clipLimit=1.5，分辨率1600）
+                processed1, sx1, sy1, _ = load_and_preprocess(img_path, max_side=1600, clip_limit=1.5)
+                dets1 = detect_with_reader(reader, processed1, sx1, sy1) if processed1 is not None else []
 
+                # 第二遍：更强对比度（CLAHE clipLimit=2.5，分辨率2000）——捕获第一遍漏掉的低对比度文字
+                processed2, sx2, sy2, _ = load_and_preprocess(img_path, max_side=2000, clip_limit=2.5)
+                dets2 = detect_with_reader(reader, processed2, sx2, sy2) if processed2 is not None else []
+
+                # 合并两次检测 → 去重 → 过滤低质量
                 detections = merge_detections(dets1, dets2, iou_thresh=0.45)
+                detections = dedup_detections(detections, iou_thresh=0.3)
+                detections = filter_low_quality(detections, conf_thresh=0.15, img_w=w, img_h=h)
+
+                # 按位置排序（从上到下、从左到右）
+                detections.sort(key=lambda d: (min(p[1] for p in d[0]), min(p[0] for p in d[0])))
+
                 elapsed = time.time() - start
 
                 f_out.write(f"[{idx}] 文件: {img_name}\n")
