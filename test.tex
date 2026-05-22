@@ -1,0 +1,392 @@
+%!TeX program = xelatex
+\documentclass[12pt,hyperref,a4paper,UTF8]{ctexart}
+\usepackage{UCASReport}
+
+%%-------------------------------正文开始---------------------------%%
+\begin{document}
+
+%%-----------------------封面--------------------%%
+\cover
+
+%%------------------摘要-------------%%
+%\begin{abstract}
+%
+%在此填写摘要内容
+%
+%\end{abstract}
+
+\thispagestyle{empty} % 首页不显示页码
+
+\newpage
+\tableofcontents
+
+%%------------------------正文页从这里开始-------------------%
+\newpage
+
+\section{奇偶校验}
+
+\subsection{原理与介绍}
+
+奇偶校验是一种原始的数据传输正确性检测方法，其实现方法为在信号序列的末尾加上一位额外位以满足整个序列的“1”信号总数为奇数（或偶数），称为奇（偶）校验。
+在verilog中，统计“1”的数量可以通过不断进行异或操作进行实现，对所有位进行异或的结果是“1”则说明整个序列共有奇数个“1”，反之则为偶数。
+
+\subsection{端口及代码实现}
+
+该实现的端口为：
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{ l | l | l | l }
+    \hline
+        \texttt{端口名称} & \texttt{类型} & \texttt{位宽（bit）} & \texttt{功能} \\
+        \hline
+        clk  & wire & 1 & 时钟信号 \\
+        rst\_n & wire & 1 & 低电平置零信号 \\
+        in & wire & BITS\_LENGTH & 输入信号 \\
+        odd & reg & 1 & 奇校验输入信号 \\
+        even & wire & 1 & 偶校验输出信号 \\
+        \hline
+    \end{tabular}
+    \caption{模块端口介绍}
+    \label{doc}
+\end{table}
+
+其中BITS\_LENGTH是可变参数，可根据自己的需求设定，默认值为8。其代码实现为：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.5\textwidth]{figures/parity.png}
+    \caption{奇偶校验实现代码}
+    \label{parity}
+\end{figure}
+
+\subsection{仿真与结果分析}
+
+对其编写仿真代码如下：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/parity_tb.png}
+    \caption{奇偶校验器仿真代码}
+    \label{parity_tb}
+\end{figure}
+
+运行得到仿真结果
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/parity_sim.png}
+    \caption{奇偶校验器仿真结果}
+    \label{parity_sim}
+\end{figure}
+
+由图上可看出，当输入信号中“1”的个数为奇数时，odd信号为“1”，其余时间该信号均为“0”，even信号与odd信号永远保持反向，符合逻辑，若需添加校验位，则在末尾添加对偶值即可（即：奇校验添加even作为校验位，反之亦然），可实现项目要求逻辑，故认为仿真通过。
+
+\subsection{综合及电路图生成}
+
+对程序进行RTL分析，得到：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/parity_log.png}
+    \caption{奇偶校验器门级网表}
+    \label{parity_log}
+\end{figure}
+
+可以看出程序为一系列异或门组成，对其进行综合，得到实际布线图
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/parity_cir.png}
+    \caption{奇偶校验器综合图}
+    \label{parity_cir}
+\end{figure}
+
+\clearpage
+
+\section{七段数码管显示}
+
+\subsection{原理与介绍}
+
+7段数码管的核心原理是通过独立控制8个发光二极管（7个段位+1个小数点）的亮灭来显示数字或简单字符。其内部将8个LED的阳极（共阳型）或阴极（共阴型）连接在一起作为公共端，其余引脚分别控制每个独立的段（标记为a至g及dp）。通过向特定段施加正向电压（共阴型需高电平点亮，共阳型需低电平点亮），对应段便会发光，例如同时点亮a、b、c、d、e、f六个段（不点亮g段）即可构成数字“0”。这种简单直观的原理使其成为嵌入式系统中低成本显示状态信息的常见方案。
+
+其具体原理图如下
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/digital_pri.png}
+    \caption{7段数码管原理图}
+    \label{digital_pri}
+\end{figure}
+
+\subsection{端口及代码实现}
+
+该实现的端口为：
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{ l | l | l | l }
+    \hline
+        \texttt{端口名称} & \texttt{类型} & \texttt{位宽（bit）} & \texttt{功能} \\
+        \hline
+        clk  & wire & 1 & 时钟信号 \\
+        rst\_n & wire & 1 & 低电平置零信号 \\
+        number & wire & 4 & 输入信号 \\
+        out & reg & 8 & 输入信号 \\
+        \hline
+    \end{tabular}
+    \caption{模块端口介绍}
+    \label{doc}
+\end{table}
+
+对于不同所需数字，列出对应共阴极控制信号:
+
+\newpage
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{ l | l | l | l }
+    \hline
+        \texttt{显示数字} & \texttt{点亮的段} & \texttt{段模式 (g f e d c b a)} & \texttt{十六进制编码} \\
+        \hline
+        0 & a, b, c, d, e, f & 0 1 1 1 1 1 1 & 0x3F \\
+        1 & b, c & 0 0 0 0 1 1 0 & 0x06 \\
+        2 & a, b, d, e, g & 0 1 0 1 1 0 1 & 0x5B \\
+        3 & a, b, c, d, g & 0 1 0 0 1 1 1 & 0x4F \\
+        4 & b, c, f, g & 0 0 1 1 0 0 1 & 0x66 \\
+        5 & a, c, d, f, g & 0 1 0 1 1 0 1 & 0x6D \\
+        6 & a, c, d, e, f, g & 0 1 1 1 1 1 0 & 0x7D \\
+        7 & a, b, c & 0 0 0 0 1 1 1 & 0x07 \\
+        8 & a, b, c, d, e, f, g & 0 1 1 1 1 1 1 & 0x7F \\
+        9 & a, b, c, d, f, g & 0 1 1 0 1 1 1 & 0x6F \\
+        \hline
+    \end{tabular}
+    \caption{共阴极数码管数字与输出信号对应表（7段，无小数点）}
+    \label{tab:7seg_cathode_7bit}
+\end{table}
+
+\smallskip
+\textbf{说明：}
+\begin{itemize}
+    \item 共阴极数码管：公共端接低电平（GND），对应段输入高电平（1）点亮。
+    \item 段模式位序为 \{dp, g, f, e, d, c, b, a\}，dp为小数点（本表未使用，均置0）。
+    \item 十六进制编码为8位二进制数转换结果（忽略dp位时，可相应调整）。
+    \item 例如数字0：点亮a,b,c,d,e,f段，g段灭，dp灭，二进制 0111 1110 = 0x7E。
+\end{itemize}
+\end{table}
+
+故其代码实现只需使用case语句对每种输入情况进行分支即可，编写代码如下：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.5\textwidth]{figures/digital.png}
+    \caption{7段数码管实现代码}
+    \label{digital}
+\end{figure}
+
+\subsection{仿真与结果分析}
+
+对其编写仿真代码如下：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/digital_tb.png}
+    \caption{7段数码管仿真代码}
+    \label{digital_tb}
+\end{figure}
+
+运行得到仿真结果
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/digital_sim.png}
+    \caption{7段数码管仿真结果}
+    \label{digital_sim}
+\end{figure}
+
+在上图中，输入信号固定时，输出信号为其对应控制值，可实现项目要求逻辑，故认为仿真通过。
+
+\subsection{综合及电路图生成}
+
+对程序进行RTL分析，得到：
+
+\newpage
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/digital_log.png}
+    \caption{7段数码管门级网表}
+    \label{digital_log}
+\end{figure}
+
+程序为若干分支块组成，对其进行综合，得到实际布线图
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/digital_cir.png}
+    \caption{7段数码管综合图}
+    \label{digital_cir}
+\end{figure}
+
+
+\section{序列检测器}
+
+\subsection{原理与介绍}
+
+
+\paragraph{状态定义}
+采用Moore型有限状态机，共定义6个状态，每个状态代表已成功匹配的序列前缀长度：
+\begin{itemize}
+    \item $state\_initial$：初始状态，已匹配0位（期待输入'1'）
+    \item $state\_1$：已匹配"1"
+    \item $state\_10$：已匹配"10"
+    \item $state\_101$：已匹配"101"
+    \item $state\_1010$：已匹配"1010"
+    \item $state\_10101$：已匹配"10101"（检测成功，输出标志有效）
+\end{itemize}
+
+\paragraph{状态转移逻辑}
+设输入比特为$X$，当前状态为$q$，次状态为$q'$，输出$Y=1$当且仅当$q=state\_10101$。转移规则如下：
+\begin{itemize}
+    \item 从$state\_initial$：若$X=1$ → $state\_1$；否则$X=0$ → 停留在$state\_initial$。
+    \item 从$state\_1$：若$X=0$ → $state\_10$；否则$X=1$ → 停留在$state\_1$（因为"11"前缀仍视为最后一个'1'匹配新序列的起点）。
+    \item 从$state\_10$：若$X=1$ → $state\_101$；否则$X=0$ → 跳回$state\_initial$（因为"100"完全中断了"101"期望）。
+    \item 从$state\_101$：若$X=0$ → $state\_1010$；否则$X=1$ → 跳回$state\_1$（因为"1011"的最后一位'1'可作为新序列的起始）。
+    \item 从$state\_1010$：若$X=1$ → $state\_10101$（完成检测）；否则$X=0$ → 跳回$state\_initial$（因为"10100"末尾"100"中断了序列）。
+    \item 从$state\_10101$（检测成功）：无论$X$为何值，需根据重叠检测需求转移：
+        \begin{itemize}
+            \item 若允许重叠（如检测"10101"中的最后一个'1'可作为下个序列的起始）：$X=1$ → $state\_1$；$X=0$ → $state\_1010$。
+            \item 若不允许重叠：回到$state\_initial$。
+        \end{itemize}
+        本设计采用允许重叠模式，更贴合序列检测的典型场景。
+\end{itemize}
+
+\newpage
+
+\paragraph{状态转移图}
+下图展示了该Moore型状态机的完整转移关系，其中红色箭头表示输出为1的转移路径（到达$state\_10101$）。
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/state.png}
+    \caption{10101序列检测器状态转换图}
+    \label{state}
+\end{figure}
+
+\paragraph{输出逻辑}
+由于采用Moore型状态机，输出$Y$仅与当前状态有关：
+\[
+Y = 1 \quad\text{当且仅当}\quad q = state\_10101
+\]
+当检测到完整序列"10101"时，在进入$state\_10101$的时钟周期内输出$Y=1$。在允许重叠的设计下，若输入序列为"1010101"，则在第5位和第7位分别输出两次脉冲（分别对应前一个"10101"和后一个"10101"的重叠部分）。
+
+
+\subsection{端口及代码实现}
+
+该实现的端口为：
+
+\begin{table}[!htbp]
+    \centering
+    \begin{tabular}{ l | l | l | l }
+    \hline
+        \texttt{端口名称} & \texttt{类型} & \texttt{位宽（bit）} & \texttt{功能} \\
+        \hline
+        clk  & wire & 1 & 时钟信号 \\
+        rst\_n & wire & 1 & 低电平置零信号 \\
+        in & wire & 1 & 输入信号 \\
+        is\_10101 & reg & 1 & 序列识别信号 \\
+        \hline
+    \end{tabular}
+    \caption{模块端口介绍}
+    \label{doc}
+\end{table}
+
+其中in是串行输入信号，is\_10101是序列判别结果。其代码实现为：
+
+\newpage
+
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.7\textwidth]{figures/detect1.png}
+    \caption{端口定义与状态参数初始化}
+    \label{detect1}
+\end{figure}
+
+首先定义输入输出端口，并初始化各个状态
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.7\textwidth]{figures/detect2.png}
+    \caption{状态更新逻辑}
+    \label{detect2}
+\end{figure}
+
+确定状态更新与重置的逻辑
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.7\textwidth]{figures/detect3.png}
+    \caption{状态转换逻辑}
+    \label{detect3}
+\end{figure}
+
+按照状态转换图描写case确定每个分支跳转路径
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.7\textwidth]{figures/detect4.png}
+    \caption{输出逻辑}
+    \label{detect4}
+\end{figure}
+
+如果为state\_10101状态，则输出信号置1作为输出。
+
+\subsection{仿真与结果分析}
+
+对其编写仿真代码如下：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/detect_tb.png}
+    \caption{序列检测器仿真代码}
+    \label{detect_tb}
+\end{figure}
+
+运行得到仿真结果
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/detect_sim.png}
+    \caption{序列检测器仿真结果}
+    \label{detect_sim}
+\end{figure}
+
+\newpage
+
+由图上可看出，当检测到对应序列时，is\_10101信号为“1”，其余时间该信号均为“0”，且满足重复检测功能，可实现项目要求逻辑，故认为仿真通过。
+
+\subsection{综合及电路图生成}
+
+对程序进行RTL分析，得到：
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =1\textwidth]{figures/detect_log.png}
+    \caption{序列检测器门级网表}
+    \label{detect_log}
+\end{figure}
+
+对其进行综合，得到实际布线图
+
+\begin{figure}[!htbp]
+    \centering
+    \includegraphics[width =.8\textwidth]{figures/detect_cir.png}
+    \caption{序列检测器综合图}
+    \label{detect_cir}
+\end{figure}
+
+\clearpage
+
+
+\end{document}

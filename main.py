@@ -215,9 +215,9 @@ def draw_ocr_boxes(img_orig, detections, img_name, result_dir):
 
 def main():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    image_dir = os.path.join(base_dir, "image")
-    output_file = os.path.join(base_dir, "ocr_results.txt")
-    result_dir = os.path.join(base_dir, "results")
+    image_dir = os.path.join(base_dir, "input", "image")
+    output_file = os.path.join(base_dir, "result", "docx", "ocr_results.txt")
+    result_dir = os.path.join(base_dir, "result", "image")
     os.makedirs(result_dir, exist_ok=True)
 
     if not os.path.exists(image_dir):
